@@ -45,6 +45,17 @@ export class Database {
         ON ingested_events(event_type);
       `);
 
+      // Progress tracking table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ingestion_progress (
+          id INTEGER PRIMARY KEY DEFAULT 1,
+          last_cursor TEXT,
+          total_ingested INTEGER DEFAULT 0,
+          last_updated TIMESTAMPTZ DEFAULT NOW(),
+          CONSTRAINT single_row CHECK (id = 1)
+        );
+      `);
+
       logger.info('Database schema initialized');
     } finally {
       client.release();
@@ -82,6 +93,41 @@ export class Database {
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async saveProgress(cursor: string, totalIngested: number): Promise<void> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO ingestion_progress (id, last_cursor, total_ingested, last_updated)
+         VALUES (1, $1, $2, NOW())
+         ON CONFLICT (id) DO UPDATE 
+         SET last_cursor = $1, total_ingested = $2, last_updated = NOW()`,
+        [cursor, totalIngested]
+      );
+    } finally {
+      client.release();
+    }
+  }
+
+  async getProgress(): Promise<{ cursor: string | null; totalIngested: number } | null> {
+    const client: PoolClient = await this.pool.connect();
+    try {
+      const result = await client.query(
+        'SELECT last_cursor, total_ingested FROM ingestion_progress WHERE id = 1'
+      );
+      
+      if (result.rows.length === 0) {
+        return null;
+      }
+
+      return {
+        cursor: result.rows[0].last_cursor,
+        totalIngested: parseInt(result.rows[0].total_ingested, 10)
+      };
     } finally {
       client.release();
     }
