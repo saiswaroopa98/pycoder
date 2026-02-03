@@ -8,6 +8,7 @@ curl -s -H "X-API-Key: $API_KEY" "${BASE_URL}/api/v1/events?limit=1000" | jq '{h
 
 echo ""
 echo "If there was a cursor above, testing with cursor..."
+
 CURSOR=$(curl -s -H "X-API-Key: $API_KEY" "${BASE_URL}/api/v1/events?limit=1000" | jq -r '.nextCursor // .cursor // empty')
 
 if [ ! -z "$CURSOR" ]; then
