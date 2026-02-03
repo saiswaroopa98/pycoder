@@ -24,7 +24,8 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ingestion
       API_BASE_URL: http://datasync-dev-alb-101078500.us-east-1.elb.amazonaws.com
-      API_KEY: ds_c073c1205c239fd07cbbe25b098dd224
+      API_KEY: ${API_KEY}
+      GITHUB_REPO_URL: ${GITHUB_REPO_URL}
       BATCH_SIZE: 1000
       LOG_LEVEL: info
     depends_on:
@@ -34,7 +35,6 @@ services:
       - assignment-network
     volumes:
       - ./output:/app/output
-    restart: unless-stopped
 
 volumes:
   assignment_postgres_data:

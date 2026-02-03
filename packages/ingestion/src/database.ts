@@ -69,26 +69,37 @@ export class Database {
     try {
       await client.query('BEGIN');
 
-      for (const event of events) {
+      // Batch insert - much faster than individual inserts
+      const values: any[] = [];
+      const placeholders: string[] = [];
+      
+      events.forEach((event, idx) => {
+        const baseIdx = idx * 6;
+        placeholders.push(
+          `($${baseIdx + 1}, $${baseIdx + 2}, $${baseIdx + 3}, $${baseIdx + 4}, $${baseIdx + 5}, $${baseIdx + 6})`
+        );
+        
         const eventType = event.eventType || event.event_type || event.type || null;
         const userId = event.userId || event.user_id || null;
         const sessionId = event.sessionId || event.session_id || null;
         
-        await client.query(
-          `INSERT INTO ingested_events (id, event_type, timestamp, user_id, session_id, properties)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (id) DO NOTHING`,
-          [
-            event.id,
-            eventType,
-            event.timestamp,
-            userId,
-            sessionId,
-            JSON.stringify(event.properties || event)
-          ]
+        values.push(
+          event.id,
+          eventType,
+          event.timestamp,
+          userId,
+          sessionId,
+          JSON.stringify(event.properties || event)
         );
-      }
+      });
 
+      const query = `
+        INSERT INTO ingested_events (id, event_type, timestamp, user_id, session_id, properties)
+        VALUES ${placeholders.join(', ')}
+        ON CONFLICT (id) DO NOTHING
+      `;
+
+      await client.query(query, values);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -144,19 +155,72 @@ export class Database {
   }
 
   async exportEventIds(outputPath: string): Promise<void> {
-    const client: PoolClient = await this.pool.connect();
-    try {
-      logger.info('Exporting event IDs...');
-      const result = await client.query('SELECT id FROM ingested_events ORDER BY id');
+  const client: PoolClient = await this.pool.connect();
+  try {
+    logger.info('Exporting event IDs...');
+    
+    // Get count
+    const countResult = await client.query('SELECT COUNT(*) as count FROM ingested_events');
+    const totalCount = parseInt(countResult.rows[0].count, 10);
+    logger.info({ totalCount }, 'Total events to export');
+    
+    // Export in batches to avoid memory issues
+    const batchSize = 50000;
+    const writeStream = fs.createWriteStream(outputPath, { flags: 'w' });
+    
+    let offset = 0;
+    let exported = 0;
+    
+    while (offset < totalCount) {
+      const result = await client.query(
+        'SELECT id FROM ingested_events ORDER BY id LIMIT $1 OFFSET $2',
+        [batchSize, offset]
+      );
       
-      const ids = result.rows.map((row: any) => row.id).join('\n');
-      fs.writeFileSync(outputPath, ids);
+      for (let i = 0; i < result.rows.length; i++) {
+        if (offset > 0 || i > 0) {
+          writeStream.write('\n');
+        }
+        writeStream.write(result.rows[i].id);
+      }
       
-      logger.info({ count: result.rows.length, path: outputPath }, 'Event IDs exported');
-    } finally {
-      client.release();
+      exported += result.rows.length;
+      offset += batchSize;
+      
+      logger.info({
+        exported,
+        total: totalCount,
+        progress: `${((exported / totalCount) * 100).toFixed(1)}%`
+      }, 'Export progress');
     }
+    
+    writeStream.end();
+    
+    // Wait for write to finish
+    await new Promise<void>((resolve) => {
+      writeStream.on('finish', () => resolve());
+    });
+    
+    // Verify the export
+    const fileContent = fs.readFileSync(outputPath, 'utf-8');
+    const lineCount = fileContent.split('\n').filter((line: string) => line.trim()).length;
+    
+    logger.info({ 
+      exported: lineCount,
+      expected: totalCount,
+      path: outputPath,
+      fileSize: `${(fs.statSync(outputPath).size / 1024 / 1024).toFixed(2)} MB`,
+      match: lineCount === totalCount ? 'YES ✓' : 'NO ✗'
+    }, 'Event IDs exported');
+    
+    if (lineCount !== totalCount) {
+      throw new Error(`Export verification failed: exported ${lineCount} but expected ${totalCount}`);
+    }
+    
+  } finally {
+    client.release();
   }
+}
 
   async close(): Promise<void> {
     await this.pool.end();

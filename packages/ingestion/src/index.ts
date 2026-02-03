@@ -1,6 +1,7 @@
 import { ApiClient } from './api-client';
 import { Database } from './database';
 import { IngestionOrchestrator } from './orchestrator';
+import { Submitter } from './submitter';
 import { logger } from './logger';
 import * as dotenv from 'dotenv';
 
@@ -10,6 +11,7 @@ const config = {
   databaseUrl: process.env.DATABASE_URL || 'postgresql://postgres:postgres@postgres:5432/ingestion',
   apiBaseUrl: process.env.API_BASE_URL || '',
   apiKey: process.env.API_KEY || '',
+  githubRepo: process.env.GITHUB_REPO_URL || '',
 };
 
 async function main(): Promise<void> {
@@ -43,9 +45,24 @@ async function main(): Promise<void> {
   const orchestrator = new IngestionOrchestrator(api, db);
 
   try {
+    // Run ingestion
     await orchestrator.start();
-    await db.exportEventIds('/app/output/event_ids.txt');
-    logger.info('Export complete');
+    
+    // Export event IDs
+    const outputPath = '/app/output/event_ids.txt';
+    await db.exportEventIds(outputPath);
+    logger.info({ path: outputPath }, 'Event IDs exported');
+    
+    // Submit if GitHub repo URL is provided
+    if (config.githubRepo) {
+      const submitter = new Submitter(config.apiBaseUrl, config.apiKey, config.githubRepo);
+      await submitter.submit(outputPath);
+    } else {
+      logger.warn('GITHUB_REPO_URL not set, skipping submission');
+      logger.info('To submit manually, run:');
+      logger.info(`curl -X POST -H "X-API-Key: ${config.apiKey}" -H "Content-Type: text/plain" --data-binary @output/event_ids.txt "${config.apiBaseUrl}/api/v1/submissions?github_repo=YOUR_GITHUB_URL"`);
+    }
+    
   } catch (error: any) {
     logger.error({ error: error.message }, 'Fatal error');
     process.exit(1);
